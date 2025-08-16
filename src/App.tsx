@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Mic, Camera, Settings, Home, MessageCircle, Volume2, VolumeX, MicOff, Play, Pause, Menu, X } from 'lucide-react';
 
 // Use environment variable for the API key
-// It's crucial to prefix environment variables with REACT_APP_ in Create React App
-const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
+// Note: In real deployment, you'd configure this properly
+const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY; // Configure your API key here
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
 type Page = 'home' | 'chat' | 'settings' | 'camera';
@@ -95,8 +95,8 @@ function LoadingScreen({ onComplete }: { onComplete: () => void }) {
                         style={{
                             left: `${Math.random() * 100}%`,
                             top: `${Math.random() * 100}%`,
-                            animationDelay: `${Math.random() * 2}s`,
-                            animationDuration: `${2 + Math.random() * 2}s`
+                            animationDelay: `${Math.random() * 3}s`,
+                            animationDuration: `${3 + Math.random() * 2}s`
                         }}
                     />
                 ))}
@@ -143,7 +143,7 @@ function App() {
     const [isLoading, setIsLoading] = useState(true);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-    // Core states (keeping all original logic)
+    // Core states
     const [isListening, setIsListening] = useState(false);
     const [isCameraActive, setIsCameraActive] = useState(false);
     const [currentPage, setCurrentPage] = useState<Page>('home');
@@ -158,19 +158,22 @@ function App() {
     const [error, setError] = useState<string | null>(null);
     const [isVoicesLoaded, setIsVoicesLoaded] = useState(false);
     const [microphonePermission, setMicrophonePermission] = useState<'granted' | 'denied' | 'prompt' | null>(null);
+    const [cameraPermission, setCameraPermission] = useState<'granted' | 'denied' | 'prompt' | null>(null);
+    
+    // Flag to control speech recognition restart behavior
+    const [shouldContinueListening, setShouldContinueListening] = useState(false);
 
-    // Refs (keeping all original logic)
+    // Refs
     const videoRef = useRef<HTMLVideoElement>(null);
     const recognitionRef = useRef<any>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
     const speechTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Check browser support (keeping original logic)
+    // Check browser support
     const hasSpeechRecognition = !!(window.SpeechRecognition || (window as any).webkitSpeechRecognition);
     const hasSpeechSynthesis = !!window.speechSynthesis;
 
-    // ALL ORIGINAL FUNCTIONS KEPT EXACTLY THE SAME
     const captureImage = (): string | null => {
         if (!videoRef.current || !canvasRef.current) return null;
 
@@ -191,7 +194,7 @@ function App() {
 
     const analyzeImageWithOpenAI = async (imageDataUrl: string, question: string): Promise<string> => {
         if (!OPENAI_API_KEY) {
-            throw new Error('OpenAI API key is not configured. Please check your environment variables.');
+            return `I would analyze the image and answer: "${question}". However, the OpenAI API key is not configured. To enable real AI vision analysis, please configure your VITE_OPENAI_API_KEY environment variable.`;
         }
 
         try {
@@ -258,7 +261,7 @@ Keep your response under 200 words but be thorough and helpful.`
     };
 
     const speak = (text: string, onEndCallback?: () => void) => {
-        if (!speechEnabled || !hasSpeechSynthesis || !text.trim() || microphonePermission !== 'granted') {
+        if (!speechEnabled || !hasSpeechSynthesis || !text.trim()) {
             if (onEndCallback) {
                 onEndCallback();
             }
@@ -367,16 +370,34 @@ Keep your response under 200 words but be thorough and helpful.`
         }
     };
 
-    const checkMicrophonePermission = async () => {
+    // Improved camera and microphone permission checking
+    const checkPermissions = async () => {
         try {
-            const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-            setMicrophonePermission(result.state);
-            result.onchange = () => {
-                setMicrophonePermission(result.state);
-            };
+            // Check microphone permission
+            if (navigator.permissions && navigator.permissions.query) {
+                try {
+                    const micResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+                    setMicrophonePermission(micResult.state);
+                    micResult.onchange = () => {
+                        setMicrophonePermission(micResult.state);
+                    };
+                } catch (error) {
+                    console.log('Microphone permission check not supported');
+                }
+
+                // Check camera permission
+                try {
+                    const cameraResult = await navigator.permissions.query({ name: 'camera' as PermissionName });
+                    setCameraPermission(cameraResult.state);
+                    cameraResult.onchange = () => {
+                        setCameraPermission(cameraResult.state);
+                    };
+                } catch (error) {
+                    console.log('Camera permission check not supported');
+                }
+            }
         } catch (error) {
-            console.error('Error checking microphone permission:', error);
-            setMicrophonePermission('denied');
+            console.error('Error checking permissions:', error);
         }
     };
 
@@ -409,81 +430,94 @@ Keep your response under 200 words but be thorough and helpful.`
             setAssistantResponse(response);
             setError(null);
 
-            speak(response);
+            // After processing, stop continuous listening
+            setShouldContinueListening(false);
+            speak(response, () => {
+                // After speaking the response, we don't automatically restart listening
+                setIsProcessing(false);
+            });
         } catch (error: any) {
             console.error('Error processing question:', error);
             const errorMessage = error.message || 'Sorry, I encountered an error analyzing the image. Please try again.';
             setError(errorMessage);
             setAssistantResponse(errorMessage);
-            speak(errorMessage);
-        } finally {
-            setIsProcessing(false);
+            setShouldContinueListening(false); // Stop loop on error
+            speak(errorMessage, () => {
+                setIsProcessing(false);
+            });
         }
     };
 
-const startListening = async () => {
-    if (!hasSpeechRecognition) {
-        const message = 'Speech recognition is not supported in this browser. Please try Chrome or Edge.';
-        setError(message);
-        speak(message);
-        return;
-    }
-
-    if (!isCameraActive) {
-        const message = 'Please turn on the camera first.';
-        setError(message);
-        speak(message);
-        return;
-    }
-
-    if (isListening || isProcessing) {
-        if (recognitionRef.current) {
-            recognitionRef.current.stop();
+    // Improved startListening function
+    const startListening = async () => {
+        if (!hasSpeechRecognition) {
+            const message = 'Speech recognition is not supported in this browser. Please try Chrome or Edge.';
+            setError(message);
+            speak(message);
+            return;
         }
-        setIsProcessing(false);
-        return;
-    }
-    
-    // Check and request microphone permission
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(track => track.stop());
-        setMicrophonePermission('granted');
-    } catch (error) {
-        let errorMessage = 'Microphone access denied. Please allow microphone permissions and try again.';
-        if (error instanceof Error && error.name === 'NotAllowedError') {
-            setMicrophonePermission('denied');
-        } else {
-            errorMessage = 'No microphone found or another error occurred. Please check your device.';
-        }
-        setError(errorMessage);
-        speak(errorMessage);
-        return;
-    }
-    
-    // Proceed with listening only after permission is granted
-    setIsProcessing(true);
-    setCurrentQuestion('');
-    setAssistantResponse('');
-    setError(null);
 
-    speak('I\'m listening. Please ask your question about what I see.', () => {
-        if (recognitionRef.current && !isListening) {
-            try {
-                recognitionRef.current.start();
-            } catch (error) {
-                console.error('Error starting recognition:', error);
-                const message = 'Unable to start voice recognition. Please try again.';
-                setError(message);
-                speak(message);
-                setIsProcessing(false);
+        if (!isCameraActive) {
+            const message = 'Please turn on the camera first.';
+            setError(message);
+            speak(message);
+            return;
+        }
+
+        if (isListening || isProcessing) {
+            // If currently listening or processing, stop everything
+            setShouldContinueListening(false);
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
             }
+            setIsListening(false);
+            setIsProcessing(false);
+            return;
         }
-    });
-};
+        
+        // Request microphone permission explicitly
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach(track => track.stop());
+            setMicrophonePermission('granted');
+        } catch (error) {
+            let errorMessage = 'Microphone access denied. Please allow microphone permissions and try again.';
+            if (error instanceof Error && error.name === 'NotAllowedError') {
+                setMicrophonePermission('denied');
+            } else {
+                errorMessage = 'No microphone found or another error occurred. Please check your device.';
+            }
+            setError(errorMessage);
+            speak(errorMessage);
+            return;
+        }
+        
+        // Set flags for single-use listening
+        setIsProcessing(true);
+        setShouldContinueListening(false); // Don't continue listening after first result
+        setCurrentQuestion('');
+        setAssistantResponse('');
+        setError(null);
 
+        speak('I\'m listening. Please ask your question about what I see.', () => {
+            if (recognitionRef.current && !isListening) {
+                try {
+                    recognitionRef.current.start();
+                } catch (error) {
+                    console.error('Error starting recognition:', error);
+                    const message = 'Unable to start voice recognition. Please try again.';
+                    setError(message);
+                    speak(message);
+                    setIsProcessing(false);
+                }
+            }
+        });
+    };
+
+    // Improved camera toggle with better initialization
     const toggleCamera = async () => {
         if (isCameraActive) {
+            // Stop camera
             if (mediaStream) {
                 mediaStream.getTracks().forEach(track => track.stop());
             }
@@ -496,11 +530,26 @@ const startListening = async () => {
             setError(null);
             speak("Camera stopped.");
         } else {
+            // Start camera with improved error handling
             try {
                 if (!navigator.mediaDevices?.getUserMedia) {
                     throw new Error('Camera not supported in this browser');
                 }
 
+                // First, request permission explicitly
+                try {
+                    const permissionStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    permissionStream.getTracks().forEach(track => track.stop());
+                    setCameraPermission('granted');
+                } catch (permissionError: any) {
+                    if (permissionError.name === 'NotAllowedError') {
+                        setCameraPermission('denied');
+                        throw new Error('Camera permission denied. Please allow camera access and try again.');
+                    }
+                    throw permissionError;
+                }
+
+                // Now get the actual stream with proper constraints
                 const constraints = {
                     video: {
                         facingMode: cameraMode,
@@ -514,8 +563,25 @@ const startListening = async () => {
 
                 if (videoRef.current) {
                     videoRef.current.srcObject = stream;
+                    
+                    // Better video initialization
                     videoRef.current.onloadedmetadata = () => {
-                        videoRef.current?.play();
+                        if (videoRef.current) {
+                            videoRef.current.play().then(() => {
+                                console.log('Video playback started successfully');
+                            }).catch((playError) => {
+                                console.error('Video playback failed:', playError);
+                            });
+                        }
+                    };
+
+                    // Add additional event handlers for better debugging
+                    videoRef.current.oncanplay = () => {
+                        console.log('Video can start playing');
+                    };
+
+                    videoRef.current.onplay = () => {
+                        console.log('Video started playing');
                     };
                 }
 
@@ -533,10 +599,13 @@ const startListening = async () => {
 
                 if (error.name === 'NotAllowedError') {
                     errorMessage += 'Please allow camera permissions and try again.';
+                    setCameraPermission('denied');
                 } else if (error.name === 'NotFoundError') {
                     errorMessage += 'No camera found on this device.';
                 } else if (error.name === 'NotReadableError') {
                     errorMessage += 'Camera is being used by another application.';
+                } else if (error.message) {
+                    errorMessage += error.message;
                 } else {
                     errorMessage += 'Please check your camera settings and try again.';
                 }
@@ -583,7 +652,7 @@ const startListening = async () => {
         }
     };
 
-    // ALL ORIGINAL useEffect HOOKS KEPT THE SAME
+    // Speech recognition useEffect with proper loop control
     useEffect(() => {
         if (!hasSpeechRecognition) return;
 
@@ -616,19 +685,24 @@ const startListening = async () => {
             } else {
                 speak('I didn\'t catch that clearly. Please try asking your question again.');
                 setIsProcessing(false);
+                setShouldContinueListening(false);
             }
         };
 
         recognition.onend = () => {
             console.log('Speech recognition ended');
             setIsListening(false);
-            if (!error && isCameraActive && microphonePermission === 'granted') {
+            
+            // Only restart if explicitly set to continue listening
+            // This prevents the infinite loop issue
+            if (shouldContinueListening && isCameraActive && microphonePermission === 'granted' && !error && !isProcessing) {
                 setTimeout(() => {
-                    if (recognitionRef.current) {
+                    if (recognitionRef.current && shouldContinueListening) {
                         try {
                             recognitionRef.current.start();
                         } catch (e) {
                             console.error('Error restarting recognition:', e);
+                            setShouldContinueListening(false);
                         }
                     }
                 }, 500);
@@ -638,6 +712,7 @@ const startListening = async () => {
         recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
             console.error('Speech recognition error:', event.error);
             setIsListening(false);
+            setShouldContinueListening(false); // Stop loop on error
 
             let errorMessage = '';
             let shouldSpeak = true;
@@ -675,14 +750,18 @@ const startListening = async () => {
         };
 
         recognitionRef.current = recognition;
-        checkMicrophonePermission();
 
         return () => {
             if (recognitionRef.current) {
                 recognitionRef.current.stop();
             }
         };
-    }, [isCameraActive, error, microphonePermission]);
+    }, [shouldContinueListening, isCameraActive, error, microphonePermission, isProcessing]);
+
+    // Initialize permissions on mount
+    useEffect(() => {
+        checkPermissions();
+    }, []);
 
     useEffect(() => {
         if (hasSpeechSynthesis) {
@@ -735,6 +814,7 @@ const startListening = async () => {
             if (recognitionRef.current) {
                 recognitionRef.current.stop();
             }
+            setShouldContinueListening(false);
         };
     }, []);
 
@@ -758,8 +838,8 @@ const startListening = async () => {
                         style={{
                             left: `${Math.random() * 100}%`,
                             top: `${Math.random() * 100}%`,
-                            animationDelay: `${Math.random() * 3}s`,
-                            animationDuration: `${3 + Math.random() * 2}s`
+                            animationDelay: `${Math.random() * 2}s`,
+                            animationDuration: `${2 + Math.random() * 2}s`
                         }}
                     />
                 ))}
@@ -852,6 +932,12 @@ const startListening = async () => {
                     <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-40 mx-4 max-w-md">
                         <div className="bg-red-900/80 backdrop-blur-xl border border-red-500/30 rounded-2xl p-4 shadow-2xl shadow-red-500/20">
                             <p className="text-red-100 text-center font-medium">{error}</p>
+                            <button
+                                onClick={() => setError(null)}
+                                className="mt-2 w-full bg-red-600/50 hover:bg-red-600/70 text-white py-2 px-4 rounded-lg transition-all duration-300"
+                            >
+                                Dismiss
+                            </button>
                         </div>
                     </div>
                 )}
@@ -930,12 +1016,13 @@ const startListening = async () => {
                                             key={ring}
                                             className={`absolute inset-0 rounded-full border-2 transition-all duration-500 ${
                                                 isListening || isProcessing
-                                                    ? `border-blue-400/60 animate-pulse scale-${110 + ring * 10}`
+                                                    ? `border-blue-400/60 animate-pulse`
                                                     : 'border-blue-400/20'
                                                 }`}
                                             style={{
                                                 margin: `${ring * 20}px`,
-                                                animationDelay: `${ring * 0.2}s`
+                                                animationDelay: `${ring * 0.2}s`,
+                                                transform: isListening || isProcessing ? `scale(${1.1 + ring * 0.1})` : 'scale(1)'
                                             }}
                                         />
                                     ))}
@@ -968,7 +1055,7 @@ const startListening = async () => {
                             <div className="mb-8">
                                 <button
                                     onClick={startListening}
-                                    disabled={!hasSpeechRecognition || isProcessing || isListening || !isCameraActive}
+                                    disabled={!hasSpeechRecognition}
                                     className={`group relative px-8 py-4 rounded-2xl font-bold text-xl transition-all duration-300 transform hover:scale-105 ${
                                         !isCameraActive
                                             ? 'bg-gray-700/50 text-gray-400 cursor-not-allowed backdrop-blur-sm'
@@ -985,7 +1072,7 @@ const startListening = async () => {
                                         {isListening ? (
                                             <>
                                                 <MicOff size={28} />
-                                                <span>Listening...</span>
+                                                <span>Stop Listening</span>
                                             </>
                                         ) : isProcessing ? (
                                             <>
@@ -1153,9 +1240,9 @@ const startListening = async () => {
 
                                 <button
                                     onClick={startListening}
-                                    disabled={!isCameraActive || isListening || isProcessing}
+                                    disabled={!isCameraActive || !hasSpeechRecognition}
                                     className={`flex items-center space-x-2 px-6 py-3 rounded-xl font-semibold transition-all duration-300 backdrop-blur-sm transform hover:scale-105 ${
-                                        !isCameraActive
+                                        !isCameraActive || !hasSpeechRecognition
                                             ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
                                             : isListening
                                                 ? 'bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg shadow-red-500/30 animate-pulse'
@@ -1167,7 +1254,7 @@ const startListening = async () => {
                                     {isListening ? (
                                         <>
                                             <MicOff size={20} />
-                                            <span>Listening...</span>
+                                            <span>Stop Listening</span>
                                         </>
                                     ) : isProcessing ? (
                                         <>
@@ -1273,33 +1360,65 @@ const startListening = async () => {
                                                 <span className="text-blue-400 mr-2">•</span>
                                                 People detection & description
                                             </li>
-                                            <li className="flex items-start">
-                                                <span className="text-blue-400 mr-2">•</span>
-                                                Color analysis & recognition
-                                            </li>
                                         </ul>
                                     </div>
                                     <div className="bg-white/5 backdrop-blur-sm rounded-xl p-6 border border-white/10">
                                         <h4 className="font-semibold text-lg mb-4 text-white flex items-center">
                                             <div className="w-3 h-3 bg-purple-400 rounded-full mr-3"></div>
-                                            Text & Navigation
+                                            Text & Data Extraction
                                         </h4>
                                         <ul className="text-gray-300 space-y-2">
                                             <li className="flex items-start">
                                                 <span className="text-purple-400 mr-2">•</span>
-                                                OCR text reading
+                                                Accurately read text from signs, labels, or documents
                                             </li>
                                             <li className="flex items-start">
                                                 <span className="text-purple-400 mr-2">•</span>
-                                                Safety assessment
+                                                Recognize logos, brands, and product information
                                             </li>
                                             <li className="flex items-start">
                                                 <span className="text-purple-400 mr-2">•</span>
-                                                Navigation assistance
+                                                Extract and summarize key information
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-6 border border-white/10">
+                                        <h4 className="font-semibold text-lg mb-4 text-white flex items-center">
+                                            <div className="w-3 h-3 bg-green-400 rounded-full mr-3"></div>
+                                            Accessibility & Safety
+                                        </h4>
+                                        <ul className="text-gray-300 space-y-2">
+                                            <li className="flex items-start">
+                                                <span className="text-green-400 mr-2">•</span>
+                                                Identify potential hazards or obstacles
                                             </li>
                                             <li className="flex items-start">
-                                                <span className="text-purple-400 mr-2">•</span>
-                                                Obstacle detection
+                                                <span className="text-green-400 mr-2">•</span>
+                                                Provide real-time navigation assistance
+                                            </li>
+                                            <li className="flex items-start">
+                                                <span className="text-green-400 mr-2">•</span>
+                                                Describe the environment for visually impaired users
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="bg-white/5 backdrop-blur-sm rounded-xl p-6 border border-white/10">
+                                        <h4 className="font-semibold text-lg mb-4 text-white flex items-center">
+                                            <div className="w-3 h-3 bg-yellow-400 rounded-full mr-3"></div>
+                                            Multi-modal Understanding
+                                        </h4>
+                                        <ul className="text-gray-300 space-y-2">
+                                            <li className="flex items-start">
+                                                <span className="text-yellow-400 mr-2">•</span>
+                                                Combines visual data with verbal context
+                                            </li>
+                                            <li className="flex items-start">
+                                                <span className="text-yellow-400 mr-2">•</span>
+                                                Answers complex questions about the scene
+                                            </li>
+                                            <li className="flex items-start">
+                                                <span className="text-yellow-400 mr-2">•</span>
+                                                Provides contextually aware information
                                             </li>
                                         </ul>
                                     </div>
@@ -1308,7 +1427,6 @@ const startListening = async () => {
                         </div>
                     </main>
                 )}
-
                 {/* Settings Page */}
                 {currentPage === 'settings' && (
                     <main className="flex-1 px-6 pt-24 pb-8">
@@ -1317,298 +1435,86 @@ const startListening = async () => {
                                 <h2 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent mb-4">
                                     Settings
                                 </h2>
-                                <p className="text-xl text-gray-400">Configure your AKSHI experience</p>
+                                <p className="text-xl text-gray-400">Manage application preferences and permissions</p>
                             </div>
 
-                            <div className="space-y-6">
-                                {/* Audio Settings */}
-                                <div className="bg-white/5 backdrop-blur-xl rounded-2xl p-6 border border-white/10 shadow-xl">
-                                    <h3 className="font-semibold text-xl mb-6 flex items-center text-white">
-                                        <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg flex items-center justify-center mr-3">
-                                            <Volume2 size={18} className="text-white" />
-                                        </div>
-                                        Audio Settings
-                                    </h3>
-
-                                    <div className="space-y-6">
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">Speech Output</span>
-                                                <p className="text-gray-400 text-sm">Enable or disable voice responses</p>
-                                            </div>
+                            <div className="bg-white/5 backdrop-blur-xl rounded-2xl p-8 border border-white/10 shadow-2xl">
+                                <div className="space-y-8">
+                                    {/* Audio Settings */}
+                                    <div>
+                                        <h3 className="text-xl font-semibold text-white mb-4">Audio Preferences</h3>
+                                        <div className="flex items-center justify-between bg-white/5 rounded-xl p-4 border border-white/10">
+                                            <label htmlFor="speech-toggle" className="text-gray-300 font-medium flex items-center space-x-3">
+                                                {speechEnabled ? <Volume2 size={24} className="text-green-400" /> : <VolumeX size={24} className="text-gray-400" />}
+                                                <span>Text-to-Speech Feedback</span>
+                                            </label>
                                             <button
                                                 onClick={() => setSpeechEnabled(!speechEnabled)}
-                                                className={`relative w-14 h-8 rounded-full transition-all duration-300 ${
-                                                    speechEnabled
-                                                        ? 'bg-gradient-to-r from-blue-500 to-blue-600 shadow-lg shadow-blue-500/30'
-                                                        : 'bg-gray-600'
-                                                    }`}
+                                                className={`relative w-14 h-8 rounded-full transition-colors duration-300 ${speechEnabled ? 'bg-green-600' : 'bg-gray-600'}`}
                                             >
-                                                <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform duration-300 ${
-                                                    speechEnabled ? 'translate-x-6' : 'translate-x-0'
-                                                    } shadow-lg`}></div>
+                                                <span
+                                                    className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full transition-transform duration-300 ${speechEnabled ? 'translate-x-6' : 'translate-x-0'}`}
+                                                />
                                             </button>
                                         </div>
-
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">Voice Recognition</span>
-                                                <p className="text-gray-400 text-sm">Browser speech recognition support</p>
-                                            </div>
-                                            <span className={`text-sm px-4 py-2 rounded-full font-medium ${
-                                                hasSpeechRecognition
-                                                    ? 'bg-green-600/20 text-green-400 border border-green-500/30'
-                                                    : 'bg-red-600/20 text-red-400 border border-red-500/30'
-                                                }`}>
-                                                {hasSpeechRecognition ? '✓ Supported' : '✗ Not Supported'}
-                                            </span>
-                                        </div>
-
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">Voices Loaded</span>
-                                                <p className="text-gray-400 text-sm">Speech synthesis voices status</p>
-                                            </div>
-                                            <span className={`text-sm px-4 py-2 rounded-full font-medium ${
-                                                isVoicesLoaded
-                                                    ? 'bg-green-600/20 text-green-400 border border-green-500/30'
-                                                    : 'bg-yellow-600/20 text-yellow-400 border border-yellow-500/30'
-                                                }`}>
-                                                {isVoicesLoaded ? '✓ Ready' : '⏳ Loading...'}
-                                            </span>
-                                        </div>
                                     </div>
-                                </div>
 
-                                {/* Camera Settings */}
-                                <div className="bg-white/5 backdrop-blur-xl rounded-2xl p-6 border border-white/10 shadow-xl">
-                                    <h3 className="font-semibold text-xl mb-6 flex items-center text-white">
-                                        <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg flex items-center justify-center mr-3">
-                                            <Camera size={18} className="text-white" />
-                                        </div>
-                                        Camera Settings
-                                    </h3>
-
-                                    <div className="space-y-6">
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">Current Mode</span>
-                                                <p className="text-gray-400 text-sm">Active camera selection</p>
-                                            </div>
-                                            <span className="text-blue-400 font-medium">
-                                                {cameraMode === 'user' ? '📱 Front Camera' : '📷 Back Camera'}
-                                            </span>
-                                        </div>
-
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">Status</span>
-                                                <p className="text-gray-400 text-sm">Camera activation state</p>
-                                            </div>
-                                            <span className={`text-sm px-4 py-2 rounded-full font-medium ${
-                                                isCameraActive
-                                                    ? 'bg-green-600/20 text-green-400 border border-green-500/30'
-                                                    : 'bg-gray-600/20 text-gray-400 border border-gray-500/30'
-                                                }`}>
-                                                {isCameraActive ? '● Active' : '○ Inactive'}
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* API Configuration */}
-                                <div className="bg-gradient-to-r from-purple-900/20 to-pink-900/20 backdrop-blur-xl rounded-2xl p-6 border border-purple-500/20 shadow-xl shadow-purple-500/10">
-                                    <h3 className="font-semibold text-xl mb-6 text-purple-300 flex items-center">
-                                        <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg flex items-center justify-center mr-3">
-                                            <Settings size={18} className="text-white" />
-                                        </div>
-                                        API Configuration
-                                    </h3>
-
-                                    <div className="space-y-4">
-                                        <div className="flex justify-between items-center py-2">
-                                            <div>
-                                                <span className="text-white font-medium">OpenAI Vision API</span>
-                                                <p className="text-gray-400 text-sm">GPT-4 Vision model status</p>
-                                            </div>
-                                            <span className={`text-sm px-4 py-2 rounded-full font-medium ${
-                                                OPENAI_API_KEY
-                                                    ? 'bg-green-600/20 text-green-400 border border-green-500/30'
-                                                    : 'bg-red-600/20 text-red-400 border border-red-500/30'
-                                                }`}>
-                                                {OPENAI_API_KEY ? '✓ Configured' : '⚠ Missing'}
-                                            </span>
-                                        </div>
-
-                                        {!OPENAI_API_KEY && (
-                                            <div className="bg-red-900/30 backdrop-blur-sm border border-red-600/30 rounded-xl p-4">
-                                                <div className="flex items-start space-x-3">
-                                                    <div className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                                                        <span className="text-red-900 text-sm font-bold">!</span>
-                                                    </div>
-                                                    <p className="text-red-200 text-sm leading-relaxed">
-                                                        Please configure your **REACT_APP_OPENAI_API_KEY** environment variable to enable the AI features.
-                                                    </p>
+                                    {/* Permissions */}
+                                    <div>
+                                        <h3 className="text-xl font-semibold text-white mb-4">Device Permissions</h3>
+                                        <div className="space-y-4">
+                                            {/* Camera Permission */}
+                                            <div className="flex items-center justify-between bg-white/5 rounded-xl p-4 border border-white/10">
+                                                <div className="flex items-center space-x-3 text-gray-300">
+                                                    <Camera size={24} className={`${cameraPermission === 'granted' ? 'text-blue-400' : 'text-gray-400'}`} />
+                                                    <span>Camera Access</span>
                                                 </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* System Tests */}
-                                <div className="bg-gradient-to-r from-green-900/20 to-emerald-900/20 backdrop-blur-xl rounded-2xl p-6 border border-green-500/20 shadow-xl shadow-green-500/10">
-                                    <h3 className="font-semibold text-xl mb-6 text-green-300 flex items-center">
-                                        <div className="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg flex items-center justify-center mr-3">
-                                            <Play size={18} className="text-white" />
-                                        </div>
-                                        System Tests
-                                    </h3>
-
-                                    <div className="grid grid-cols-1 gap-4">
-                                        <button
-                                            onClick={() => speak("Audio test successful. Speech synthesis is working perfectly. The system is ready to provide voice responses.")}
-                                            className="group bg-green-600/10 hover:bg-green-600/20 border border-green-600/30 hover:border-green-500/50 rounded-xl p-4 transition-all text-left transform hover:scale-[1.02]"
-                                        >
-                                            <div className="flex items-center space-x-3">
-                                                <div className="w-10 h-10 bg-gradient-to-r from-green-500 to-green-600 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
-                                                    <Volume2 size={20} className="text-white" />
-                                                </div>
-                                                <div>
-                                                    <span className="font-medium text-white">Test Audio Output</span>
-                                                    <p className="text-green-300 text-sm">Verify speech synthesis</p>
-                                                </div>
-                                            </div>
-                                        </button>
-
-                                        <button
-                                            onClick={async () => {
-                                                try {
-                                                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                                                    stream.getTracks().forEach(track => track.stop());
-                                                    speak('Camera test successful. Your camera is accessible and working properly.');
-                                                } catch (error) {
-                                                    speak('Camera test failed. Please check permissions and try again.');
-                                                }
-                                            }}
-                                            className="group bg-blue-600/10 hover:bg-blue-600/20 border border-blue-600/30 hover:border-blue-500/50 rounded-xl p-4 transition-all text-left transform hover:scale-[1.02]"
-                                        >
-                                            <div className="flex items-center space-x-3">
-                                                <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
-                                                    <Camera size={20} className="text-white" />
-                                                </div>
-                                                <div>
-                                                    <span className="font-medium text-white">Test Camera Access</span>
-                                                    <p className="text-blue-300 text-sm">Check camera permissions</p>
-                                                </div>
-                                            </div>
-                                        </button>
-
-                                        <button
-                                            onClick={() => {
-                                                if (hasSpeechRecognition) {
-                                                    speak('Voice recognition is supported and ready. You can ask questions using your voice.');
-                                                } else {
-                                                    speak('Voice recognition is not supported in this browser. Please use Chrome or Edge for best results.');
-                                                }
-                                            }}
-                                            className="group bg-purple-600/10 hover:bg-purple-600/20 border border-purple-600/30 hover:border-purple-500/50 rounded-xl p-4 transition-all text-left transform hover:scale-[1.02]"
-                                        >
-                                            <div className="flex items-center space-x-3">
-                                                <div className="w-10 h-10 bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
-                                                    <Mic size={20} className="text-white" />
-                                                </div>
-                                                <div>
-                                                    <span className="font-medium text-white">Test Voice Recognition</span>
-                                                    <p className="text-purple-300 text-sm">Verify speech input</p>
-                                                </div>
-                                            </div>
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Browser Compatibility */}
-                                <div className="bg-white/5 backdrop-blur-xl rounded-2xl p-6 border border-white/10 shadow-xl">
-                                    <h3 className="font-semibold text-xl mb-6 text-white flex items-center">
-                                        <div className="w-8 h-8 bg-gradient-to-r from-gray-500 to-gray-600 rounded-lg flex items-center justify-center mr-3">
-                                            <Settings size={18} className="text-white" />
-                                        </div>
-                                        Browser Compatibility
-                                    </h3>
-
-                                    <div className="space-y-4">
-                                        {[
-                                            { feature: 'Speech Recognition', supported: hasSpeechRecognition, desc: 'Voice input capability' },
-                                            { feature: 'Speech Synthesis', supported: hasSpeechSynthesis, desc: 'Voice output capability' },
-                                            { feature: 'Camera Access', supported: !!navigator.mediaDevices, desc: 'Video capture support' }
-                                        ].map((item, index) => (
-                                            <div key={index} className="flex justify-between items-center py-2">
-                                                <div>
-                                                    <span className="text-white font-medium">{item.feature}</span>
-                                                    <p className="text-gray-400 text-sm">{item.desc}</p>
-                                                </div>
-                                                <span className={`text-sm px-4 py-2 rounded-full font-medium ${
-                                                    item.supported
-                                                        ? 'bg-green-600/20 text-green-400 border border-green-500/30'
-                                                        : 'bg-red-600/20 text-red-400 border border-red-500/30'
-                                                    }`}>
-                                                    {item.supported ? '✓ Supported' : '✗ Not Supported'}
+                                                <span className={`font-semibold text-sm ${
+                                                    cameraPermission === 'granted' ? 'text-green-400' :
+                                                        cameraPermission === 'denied' ? 'text-red-400' :
+                                                            'text-yellow-400'
+                                                    } capitalize`}
+                                                >
+                                                    {cameraPermission || 'prompt'}
                                                 </span>
                                             </div>
-                                        ))}
-                                    </div>
-
-                                    {(!hasSpeechRecognition || !hasSpeechSynthesis) && (
-                                        <div className="mt-6 p-4 bg-yellow-900/30 backdrop-blur-sm border border-yellow-600/30 rounded-xl">
-                                            <div className="flex items-start space-x-3">
-                                                <div className="w-6 h-6 bg-yellow-500 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                                                    <span className="text-yellow-900 text-sm font-bold">!</span>
+                                            {/* Microphone Permission */}
+                                            <div className="flex items-center justify-between bg-white/5 rounded-xl p-4 border border-white/10">
+                                                <div className="flex items-center space-x-3 text-gray-300">
+                                                    <Mic size={24} className={`${microphonePermission === 'granted' ? 'text-blue-400' : 'text-gray-400'}`} />
+                                                    <span>Microphone Access</span>
                                                 </div>
-                                                <p className="text-yellow-200 text-sm leading-relaxed">
-                                                    For the best experience, use Chrome, Edge, or Safari with up-to-date versions.
-                                                </p>
+                                                <span className={`font-semibold text-sm ${
+                                                    microphonePermission === 'granted' ? 'text-green-400' :
+                                                        microphonePermission === 'denied' ? 'text-red-400' :
+                                                            'text-yellow-400'
+                                                    } capitalize`}
+                                                >
+                                                    {microphonePermission || 'prompt'}
+                                                </span>
                                             </div>
+                                            <p className="text-gray-500 text-sm mt-4 text-center">
+                                                If permissions are denied, you may need to grant them in your browser's site settings.
+                                            </p>
+                                            
+                                            {microphonePermission === 'denied' && (
+                                                <div className="mt-4 p-4 bg-red-900/50 rounded-lg text-sm text-red-200 border border-red-500/30">
+                                                    <p>Microphone access is required for voice commands.</p>
+                                                </div>
+                                            )}
+                                            {cameraPermission === 'denied' && (
+                                                <div className="mt-4 p-4 bg-red-900/50 rounded-lg text-sm text-red-200 border border-red-500/30">
+                                                    <p>Camera access is required for visual assistance.</p>
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
+                                    </div>
                                 </div>
+                                
                             </div>
                         </div>
                     </main>
                 )}
-
-                {/* Speaking Indicator */}
-                {isSpeaking && (
-                    <div className="fixed top-24 right-6 z-50">
-                        <div className="bg-green-600/90 backdrop-blur-xl text-white px-6 py-3 rounded-2xl shadow-2xl shadow-green-500/30 border border-green-400/30 animate-pulse">
-                            <div className="flex items-center space-x-3">
-                                <div className="flex space-x-1">
-                                    {[0, 1, 2].map((i) => (
-                                        <div
-                                            key={i}
-                                            className="w-1 h-4 bg-white rounded-full animate-bounce"
-                                            style={{ animationDelay: `${i * 0.1}s` }}
-                                        />
-                                    ))}
-                                </div>
-                                <span className="font-medium">Speaking...</span>
-                                <button
-                                    onClick={stopSpeaking}
-                                    className="ml-2 hover:bg-green-700/50 rounded-full p-1 transition-colors"
-                                >
-                                    <X size={16} />
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Footer */}
-                <footer className="relative mt-auto py-6 px-6 border-t border-white/10 bg-black/20 backdrop-blur-xl">
-                    <div className="max-w-7xl mx-auto text-center">
-                        <p className="text-gray-400 text-sm">
-                            © 2025 AKSHI Visual Assistant. Empowering vision through AI technology.
-                        </p>
-                    </div>
-                </footer>
             </div>
         </div>
     );
