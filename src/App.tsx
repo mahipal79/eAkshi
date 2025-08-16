@@ -421,55 +421,66 @@ Keep your response under 200 words but be thorough and helpful.`
         }
     };
 
-    const startListening = () => {
-        if (!hasSpeechRecognition) {
-            const message = 'Speech recognition is not supported in this browser. Please try Chrome or Edge.';
-            setError(message);
-            speak(message);
-            return;
-        }
+const startListening = async () => {
+    if (!hasSpeechRecognition) {
+        const message = 'Speech recognition is not supported in this browser. Please try Chrome or Edge.';
+        setError(message);
+        speak(message);
+        return;
+    }
 
-        if (microphonePermission !== 'granted') {
-            const message = 'Microphone permission is required to ask questions. Please allow access.';
-            setError(message);
-            speak(message);
-            return;
-        }
+    if (!isCameraActive) {
+        const message = 'Please turn on the camera first.';
+        setError(message);
+        speak(message);
+        return;
+    }
 
-        if (!isCameraActive) {
-            const message = 'Please turn on the camera first.';
-            setError(message);
-            speak(message);
-            return;
+    if (isListening || isProcessing) {
+        if (recognitionRef.current) {
+            recognitionRef.current.stop();
         }
+        setIsProcessing(false);
+        return;
+    }
+    
+    // Check and request microphone permission
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+        setMicrophonePermission('granted');
+    } catch (error) {
+        let errorMessage = 'Microphone access denied. Please allow microphone permissions and try again.';
+        if (error instanceof Error && error.name === 'NotAllowedError') {
+            setMicrophonePermission('denied');
+        } else {
+            errorMessage = 'No microphone found or another error occurred. Please check your device.';
+        }
+        setError(errorMessage);
+        speak(errorMessage);
+        return;
+    }
+    
+    // Proceed with listening only after permission is granted
+    setIsProcessing(true);
+    setCurrentQuestion('');
+    setAssistantResponse('');
+    setError(null);
 
-        if (isListening || isProcessing) {
-            if (recognitionRef.current) {
-                recognitionRef.current.stop();
+    speak('I\'m listening. Please ask your question about what I see.', () => {
+        if (recognitionRef.current && !isListening) {
+            try {
+                recognitionRef.current.start();
+            } catch (error) {
+                console.error('Error starting recognition:', error);
+                const message = 'Unable to start voice recognition. Please try again.';
+                setError(message);
+                speak(message);
+                setIsProcessing(false);
             }
-            setIsProcessing(false);
-            return;
         }
-
-        setIsProcessing(true);
-        setCurrentQuestion('');
-        setAssistantResponse('');
-        setError(null);
-
-        speak('I\'m listening. Please ask your question about what I see.', () => {
-            if (recognitionRef.current && !isListening) {
-                try {
-                    recognitionRef.current.start();
-                } catch (error) {
-                    console.error('Error starting recognition:', error);
-                    const message = 'Unable to start voice recognition. Please try again.';
-                    setError(message);
-                    speak(message);
-                    setIsProcessing(false);
-                }
-            }
-        });
-    };
+    });
+};
 
     const toggleCamera = async () => {
         if (isCameraActive) {
